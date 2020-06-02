@@ -10,9 +10,25 @@
 #define BUTTON_PRESS_THRESHOLD 500
 // how much time we are allowing for a morse sequence
 #define SEQUENCE_MAX_DURATION (30 * 1000)
+#define DEFAULT_SEQUENCE ".-."
+
+typedef struct config_t
+{
+    // Morse code to trigger relay
+    char openDoorSequence[64];
+    bc_tick_t sequenceTimeout;
+} config_t;
+
+config_t config;
+
+config_t config_default = {
+    .openDoorSequence = DEFAULT_SEQUENCE,
+    .sequenceTimeout = SEQUENCE_MAX_DURATION
+};
 
 // Button instance
 bc_button_t button;
+bc_button_t doorbellButton;
 list_t button_history;
 list_t pattern;
 
@@ -47,7 +63,7 @@ void open_door()
     //bc_module_relay_toggle(&relay);
 }
 
-/*
+
 void button_event_handler(bc_button_t *self, bc_button_event_t event, void *event_param)
 {
     if (event == BC_BUTTON_EVENT_PRESS)
@@ -59,10 +75,9 @@ void button_event_handler(bc_button_t *self, bc_button_event_t event, void *even
     // Logging in action
     bc_log_info("Button event handler - event: %i", event);
 }
-*/
 
 // This function dispatches button events
-void button_event_handler(bc_button_t *self, bc_button_event_t event, void *event_param)
+void doorbellButton_event_handler(bc_button_t *self, bc_button_event_t event, void *event_param)
 {
     bool item_added = false;
 
@@ -134,10 +149,10 @@ void button_event_handler(bc_button_t *self, bc_button_event_t event, void *even
         list_print(&button_history);
 
         if(button_history.length >= pattern.length) {
-            bool are_same = list_compare(&pattern, &button_history, SEQUENCE_MAX_DURATION);
+            bool are_same = list_compare(&pattern, &button_history, config.sequenceTimeout);
             if(are_same) {
-                bc_log_info("MORSE: '!!! Patterns are equal !!!");
-                //open_door();
+                bc_log_info("MORSE: '!!! Patterns are equal -> open the door !!!");
+                open_door();
                 list_clear(&button_history);
             } 
             //else bc_log_info("MORSE: not equal");
@@ -184,38 +199,83 @@ void tmp112_event_handler(bc_tmp112_t *self, bc_tmp112_event_t event, void *even
     }
 }
 
+void publish_sequence()
+{
+    bc_radio_pub_string("config/-/sequence", config.openDoorSequence);
+    bc_log_info("Sequence is set to: %s", config.openDoorSequence);
+}
+
+void initialize_sequence(char *sample)
+{
+    list_clear(&pattern);
+
+	size_t i = 0;
+	while (sample[i] != '\0') {
+		if (sample[i] != '-' && sample[i] != '.')
+			continue;
+
+		bool is_long = sample[i] == '-';
+		list_add_last(&pattern, 0, is_long);
+
+		i++;
+	}
+}
+
 void trigger_door_handler(uint64_t *id, const char *topic, void *value, void *param)
 {
     //bc_log_info("%s %i", topic, *(int *) value);
     //uint32_t val_uin32 = *(uint32_t *)value;
 
     open_door();
-
+    
     //char buffer[32];
     //memset(buffer, 0, sizeof(buffer));
     //sprintf(buffer, "%li", val_uin32);
     //bc_radio_pub_string("core/-/door/confirm", buffer);
     bc_radio_pub_string("core/-/door/confirm", "OK");
+}
 
-    //bc_log_debug(buffer);
+void get_sequence_handler(uint64_t *id, const char *topic, void *value, void *param)
+{
+    bc_log_info("get_sequence_handler triggered.");
+    publish_sequence();
 }
 
 void set_sequence_handler(uint64_t *id, const char *topic, void *value, void *param)
 {
     bc_log_info("set_sequence_handler triggered.");
     
-    char *newSequence = (char*)value;
+    snprintf(config.openDoorSequence, sizeof(config.openDoorSequence), "%s", (char*)value);
+    initialize_sequence(config.openDoorSequence);
+    bc_config_save();
 
-    bc_log_info("%s %s", topic, newSequence);
+    publish_sequence();
+}
+/*
+void publish_timeout()
+{
+    bc_radio_pub_int("config/-/timeout", config.sequenceTimeout);
+    bc_log_info("Sequence timeout is set to %llu ms.", config.sequenceTimeout);
 }
 
+void get_timeout_handler(uint64_t *id, const char *topic, void *value, void *param)
+{
+    bc_log_info("get_timeout_handler triggered.");
+    publish_timeout();
+}
+*/
 static const bc_radio_sub_t subs[] = {
-    {"core/-/sequence/set", BC_RADIO_SUB_PT_STRING, set_sequence_handler, NULL},
     {"core/-/door/open", BC_RADIO_SUB_PT_NULL, trigger_door_handler, NULL},
+    {"config/-/sequence/set", BC_RADIO_SUB_PT_STRING, set_sequence_handler, NULL},
+    {"config/-/sequence/get", BC_RADIO_SUB_PT_NULL, get_sequence_handler, NULL},
+//    {"config/-/timeout/set", BC_RADIO_SUB_PT_STRING, set_timeout_handler, NULL},
+//    {"config/-/timeout/get", BC_RADIO_SUB_PT_NULL, get_timeout_handler, NULL},
 };
 
 void application_init(void)
 {
+    bc_config_init(0xd00be11, &config, sizeof(config), &config_default);
+
     // Initialize logging
     bc_log_init(BC_LOG_LEVEL_DUMP, BC_LOG_TIMESTAMP_ABS);
 
@@ -227,25 +287,20 @@ void application_init(void)
     list_init(&button_history);
     list_init(&pattern);
 
-    // Prepare pattern to match
-	char* sample = ".--.-";
-	size_t i = 0;
-	while (sample[i] != '\0') {
-		if (sample[i] != '-' && sample[i] != '.')
-			continue;
-
-		bool is_long = sample[i] == '-';
-		list_add_last(&pattern, 0, is_long);
-
-		i++;
-	}
+    // Load pattern from config
+    bc_log_info("initalizing pattern from config: %s", config.openDoorSequence);
+	initialize_sequence(config.openDoorSequence);
 
     // Initialize button
     bc_button_init(&button, BC_GPIO_BUTTON, BC_GPIO_PULL_DOWN, false);
     bc_button_set_event_handler(&button, button_event_handler, NULL);
-    bc_button_set_click_timeout(&button, BUTTON_PRESS_THRESHOLD);
-    bc_button_set_hold_time(&button, BUTTON_PRESS_THRESHOLD);
 
+    // Initialize doorbell button
+    bc_button_init(&doorbellButton, BC_GPIO_P17, BC_GPIO_PULL_DOWN, false);
+    bc_button_set_event_handler(&doorbellButton, doorbellButton_event_handler, NULL);
+    bc_button_set_click_timeout(&doorbellButton, BUTTON_PRESS_THRESHOLD);
+    bc_button_set_hold_time(&doorbellButton, BUTTON_PRESS_THRESHOLD);
+    
     // Initialize relay
     bc_module_relay_init(&relay, BC_MODULE_RELAY_I2C_ADDRESS_DEFAULT);
     bc_module_relay_set_state(&relay, false);
@@ -260,15 +315,16 @@ void application_init(void)
     bc_tmp112_set_event_handler(&tmp112, tmp112_event_handler, NULL);
     bc_tmp112_set_update_interval(&tmp112, TEMPERATURE_PUBLISH_TIMEOUT_SECOND);
 
-    // Initialize readio
+    // Initialize radio
     bc_radio_init(BC_RADIO_MODE_NODE_LISTENING);
     bc_radio_set_subs((bc_radio_sub_t *) subs, sizeof(subs)/sizeof(bc_radio_sub_t));
-
-    bc_log_info("len: %s", sizeof(subs)/sizeof(bc_radio_sub_t));
 
     bc_radio_pairing_request("doorbell", VERSION);
 
     bc_led_pulse(&led, 2000);
+
+    // publish current sequence
+    publish_sequence();
 }
 
 /*
