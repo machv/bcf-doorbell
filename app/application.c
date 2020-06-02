@@ -186,21 +186,32 @@ void tmp112_event_handler(bc_tmp112_t *self, bc_tmp112_event_t event, void *even
 
 void trigger_door_handler(uint64_t *id, const char *topic, void *value, void *param)
 {
-    bc_log_info("%s %i", topic, *(int *) value);
-    uint32_t val_uin32 = *(uint32_t *)value;
+    //bc_log_info("%s %i", topic, *(int *) value);
+    //uint32_t val_uin32 = *(uint32_t *)value;
 
     open_door();
 
-    char buffer[32];
-    memset(buffer, 0, sizeof(buffer));
-    sprintf(buffer, "%li", val_uin32);
-    bc_radio_pub_string("core/-/door/confirm", buffer);
+    //char buffer[32];
+    //memset(buffer, 0, sizeof(buffer));
+    //sprintf(buffer, "%li", val_uin32);
+    //bc_radio_pub_string("core/-/door/confirm", buffer);
+    bc_radio_pub_string("core/-/door/confirm", "OK");
 
-    bc_log_debug(buffer);
+    //bc_log_debug(buffer);
 }
 
-bc_radio_sub_t subs[] = {
-    {"core/-/door/trigger", BC_RADIO_SUB_PT_INT, trigger_door_handler, NULL},
+void set_sequence_handler(uint64_t *id, const char *topic, void *value, void *param)
+{
+    bc_log_info("set_sequence_handler triggered.");
+    
+    char *newSequence = (char*)value;
+
+    bc_log_info("%s %s", topic, newSequence);
+}
+
+static const bc_radio_sub_t subs[] = {
+    {"core/-/sequence/set", BC_RADIO_SUB_PT_STRING, set_sequence_handler, NULL},
+    {"core/-/door/open", BC_RADIO_SUB_PT_NULL, trigger_door_handler, NULL},
 };
 
 void application_init(void)
@@ -251,7 +262,9 @@ void application_init(void)
 
     // Initialize readio
     bc_radio_init(BC_RADIO_MODE_NODE_LISTENING);
-    bc_radio_set_subs(subs, sizeof(subs)/sizeof(subs[0]));
+    bc_radio_set_subs((bc_radio_sub_t *) subs, sizeof(subs)/sizeof(bc_radio_sub_t));
+
+    bc_log_info("len: %s", sizeof(subs)/sizeof(bc_radio_sub_t));
 
     bc_radio_pairing_request("doorbell", VERSION);
 
